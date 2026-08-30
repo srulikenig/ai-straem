@@ -1,0 +1,33 @@
+{
+  "name": "ai-straem",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Voice AI bridge: PBX streaming channel <-> Gemini Live, with tool calling",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc -p tsconfig.all.json",
+    "test": "node --import tsx --test test/*.test.ts",
+    "mock": "tsx scripts/mock-pbx.ts",
+    "tone": "tsx scripts/make-tone.ts"
+  },
+  "dependencies": {
+    "@google/genai": "^2.19.0",
+    "dotenv": "^17.2.3",
+    "pino": "^10.0.0",
+    "pino-pretty": "^13.1.2",
+    "ws": "^8.18.3",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.7",
+    "typescript": "^5.9.3"
+  }
+}

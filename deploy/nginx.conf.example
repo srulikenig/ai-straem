@@ -1,0 +1,50 @@
+# TLS terminates here; Node listens on plain HTTP behind it.
+# The PBX requires wss:// with a valid certificate — plain ws:// never connects.
+#
+#   ln -s .../ai-straem.conf /etc/nginx/sites-enabled/
+#   certbot --nginx -d ai.example.com
+#
+# Then in the PBX channel settings, the endpoint is:
+#   wss://ai.example.com/voice
+
+server {
+    listen 443 ssl http2;
+    server_name ai.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/ai.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/ai.example.com/privkey.pem;
+
+    location /voice {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+
+        # Without these three the upgrade never happens and the PBX sees a plain
+        # HTTP response instead of a websocket.
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host       $host;
+
+        # The Authorization header carries the channel secret — it must survive.
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-Real-IP     $remote_addr;
+
+        # A call is a long-lived socket with quiet stretches. The default 60s
+        # read timeout would drop it mid-conversation.
+        proxy_read_timeout  3600s;
+        proxy_send_timeout  3600s;
+
+        # Audio is latency-sensitive; buffering adds delay for no benefit.
+        proxy_buffering off;
+    }
+
+    location /health {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+    }
+}
+
+server {
+    listen 80;
+    server_name ai.example.com;
+    return 301 https://$host$request_uri;
+}

@@ -1,0 +1,27 @@
+# /etc/systemd/system/ai-straem.service
+#   systemctl enable --now ai-straem
+#   journalctl -u ai-straem -f
+[Unit]
+Description=ai-straem voice bridge (PBX streaming <-> Gemini Live)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aistraem
+WorkingDirectory=/opt/ai-straem
+EnvironmentFile=/opt/ai-straem/.env
+ExecStart=/usr/bin/node dist/index.js
+Restart=always
+RestartSec=3
+# Logs are JSON when not attached to a TTY, which is what journald wants.
+Environment=NODE_ENV=production
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/ai-straem/recordings
+
+[Install]
+WantedBy=multi-user.target
