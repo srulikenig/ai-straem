@@ -56,6 +56,11 @@ npm run dev
 | `src/gemini/liveClient.ts` | מפגש עם Gemini Live — **כל התלות במודל נמצאת כאן** |
 | `src/tools/registry.ts` | רישום כלים, ולידציה, timeout, טיפול בשגיאות |
 | `src/tools/callControl.ts` | כלים שפועלים על השיחה: העברה, ניתוק, שמירת פרט |
+| `src/tools/expression.ts` | מפרסר חשבוני כתוב ביד — **לא** `eval` |
+| `src/tools/calculator.ts` | הכלי `calculate` |
+| `src/tools/blessings.ts` | טעינת קטלוג האיחולים והכלי `get_blessing` |
+| `src/agent/blessingAudit.ts` | אימות שאיחולים באו מהקטלוג ולא מהמודל |
+| `data/blessings.json` | **קטלוג האיחולים — ערוך אותו** |
 | `src/tools/demo.ts` | כלי דמו שמחזירים מידע — להחלפה בלוגיקה אמיתית |
 | `src/agent/bridge.ts` | מחבר את שלושתם |
 | `scripts/mock-pbx.ts` | מרכזייה מדומה לבדיקות מקומיות |
@@ -71,6 +76,68 @@ npm run dev
 
 **כלי שליטה בשיחה** מתרגמים החלטה של המודל לפקודת JSON למרכזייה:
 `transfer_to_agent`, `transfer_to_phone`, `end_call`, `save_answer`.
+
+### מחשבון
+
+`calculate` מקבל ביטוי ומחזיר מספר. הביטוי מפורסר ע"י מפרסר רקורסיבי שכתוב ביד
+(`src/tools/expression.ts`) ולא ע"י `eval` — הקלט הוא מחרוזת שמודל הרכיב ממה
+שזר אמר בטלפון, והדקדוק הזה לא יכול לייצר שום דבר חוץ ממספר. תומך
+ב-`+ - * / ^ ( )`. חילוק באפס, גלישה וקלט לא חשבוני חוזרים כשגיאה מנוסחת, לא
+כקריסה ולא כמספר שגוי.
+
+`%` נדחה בכוונה: הוא יכול להתפרש כמודולו או כאחוזים, ובחירה שקטה באחד מהם
+מייצרת מספרים שגויים בביטחון מלא. במקום זה חוזרת שגיאה עם רמז —
+"18 אחוז מ-1250 הוא `1250*0.18`".
+
+**לאמת שהוא בשימוש:**
+```bash
+journalctl -u ai-straem -o cat | grep 'calculator evaluated'
+```
+כל קריאה רושמת את הביטוי המקורי, הביטוי המנורמל, התוצאה והערך המדובר:
+```json
+{"expression":"1250*1.18","normalized":"1250*1.18","value":1475,"spoken":"1475",
+ "msg":"calculator evaluated an expression"}
+```
+
+### איחולים — וההבטחה שהם באים רק מהקטלוג
+
+`data/blessings.json` הוא המקור היחיד. `get_blessing` מחזיר רשומה אחת מילה
+במילה, עם `blessing_id`, וההנחיה בפרומפט אוסרת על המודל לנסח איחול בעצמו.
+
+**אבל פרומפט הוא לא אכיפה.** אי אפשר *למנוע* ממודל שפה לאלתר איחול — אפשר רק
+להפוך כל מקרה כזה לגלוי. לכן יש `BlessingAudit`: הוא קורא את התמלול של המודל
+עצמו (`outputAudioTranscription`), ולכל תור בודק אם יש בו שפת איחול שלא מתחקה
+אחרי רשומה שהכלי באמת הגיש. ההתאמה היא לפי חפיפת מילים ולא לפי זהות תווים,
+כי התמלול אינו זהה לטקסט המקור.
+
+כך שהמשפט "איחולים מגיעים רק דרך הכלי" מפסיק להיות תקווה והופך למשהו שאפשר
+לעשות עליו grep:
+
+```bash
+# מה הוגש מהקטלוג
+journalctl -u ai-straem -o cat | grep 'blessing served from catalogue'
+
+# סיכום אחד לכל שיחה — זו השורה שמעניינת
+journalctl -u ai-straem -o cat | grep 'blessing audit'
+
+# ⚠️ איחול שהמודל המציא
+journalctl -u ai-straem -o cat | grep -i 'not from catalogue'
+```
+
+שיחה תקינה מסיימת ב:
+```json
+{"blessingsServed":1,"blessingIds":["wedding-1"],"improvisedBlessings":0,
+ "courtesyPhrases":1,"clean":true,"msg":"blessing audit: clean — every blessing came from the catalogue"}
+```
+
+אם `clean:false` — יש שורת `blessing not from catalogue` עם המשפט המדויק שנאמר.
+`BLESSING_AUDIT_STRICT=true` מעלה את זה לרמת `error` כדי שיהיה קל להתריע.
+
+נימוסים קצרים ("מזל טוב", "בהצלחה") נספרים בנפרד כ-`courtesyPhrases` ואינם
+נחשבים לאיחול מאולתר — הם לגיטימיים בסיום שיחה.
+
+**להוסיף איחולים:** ערוך `data/blessings.json` והפעל מחדש. המזהים הם מיקומיים
+(`wedding-1`, `wedding-2`), לכן הוספה לסוף הרשימה שומרת על מזהים קיימים.
 
 ### להוסיף כלי
 

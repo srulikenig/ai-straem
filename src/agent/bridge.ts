@@ -5,6 +5,7 @@ import { downTo8k, upTo16k } from '../audio/resample.js';
 import { GeminiLive } from '../gemini/liveClient.js';
 import type { PbxSession } from '../pbx/session.js';
 import { buildRegistry, type ToolContext, type ToolRegistry } from '../tools/index.js';
+import { BlessingAudit } from './blessingAudit.js';
 
 /**
  * Wires one phone call to one model session.
@@ -25,13 +26,19 @@ export class CallBridge {
     frameMs: config.pbx.frameMs,
   });
 
+  private readonly audit: BlessingAudit;
+
   private ready = false;
   private stopped = false;
   private suppressedFrames = 0;
-  private lastTranscriptRole: 'caller' | 'bot' | null = null;
+  /** Output transcription arrives in fragments; audited once the turn closes. */
+  private botTurn = '';
 
   constructor(private readonly session: PbxSession) {
-    this.registry = buildRegistry();
+    this.audit = new BlessingAudit({ log: session.log, strict: config.blessings.auditStrict });
+    this.registry = buildRegistry({
+      onBlessingServed: (blessing) => this.audit.recordServed(blessing),
+    });
     this.gemini = new GeminiLive({
       apiKey: config.gemini.apiKey,
       model: config.gemini.model,
@@ -58,6 +65,8 @@ export class CallBridge {
   stop(): void {
     if (this.stopped) return;
     this.stopped = true;
+    this.flushBotTurn();
+    if (config.blessings.audit) this.audit.logSummary();
     this.gemini.close();
   }
 
@@ -104,7 +113,9 @@ export class CallBridge {
       this.session.play(this.toCaller.processPcm(pcm24k));
     });
 
+    // A cut-off turn still needs auditing: half a blessing is still a blessing.
     this.gemini.on('interrupted', () => {
+      this.flushBotTurn();
       // The model's own VAD also fires on background noise. Requiring our energy
       // gate to agree is what stops the bot being cut off by a passing truck.
       if (config.audio.gateBargeIn && !this.gate.speaking) {
@@ -121,9 +132,11 @@ export class CallBridge {
     });
 
     this.gemini.on('transcript', ({ role, text }) => {
-      if (role !== this.lastTranscriptRole) this.lastTranscriptRole = role;
       this.session.log.info({ role, text }, 'transcript');
+      if (role === 'bot') this.botTurn += text;
     });
+
+    this.gemini.on('turnComplete', () => this.flushBotTurn());
 
     this.gemini.on('goAway', (timeLeft) => {
       this.session.log.warn({ timeLeft }, 'model session is going away');
@@ -165,7 +178,18 @@ export class CallBridge {
     this.gemini.sendToolResponses(responses);
   }
 
-  get stats(): Record<string, number> {
-    return { suppressedFrames: this.suppressedFrames, queuedMs: Math.round(this.session.writer.queuedMs) };
+  private flushBotTurn(): void {
+    const turn = this.botTurn.trim();
+    this.botTurn = '';
+    if (!turn || !config.blessings.audit) return;
+    this.audit.checkTurn(turn);
+  }
+
+  get stats(): Record<string, unknown> {
+    return {
+      suppressedFrames: this.suppressedFrames,
+      queuedMs: Math.round(this.session.writer.queuedMs),
+      blessingAudit: this.audit.summary,
+    };
   }
 }

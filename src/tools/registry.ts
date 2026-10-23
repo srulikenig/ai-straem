@@ -90,7 +90,12 @@ export class ToolRegistry {
         Promise.resolve(tool.handler(parsed.data as never, ctx)),
         timeoutMs,
       );
-      ctx.log.info({ tool: name, ms: Date.now() - startedAt, args: parsed.data }, 'tool ok');
+      // The result is logged, not just the arguments: verifying that a tool was
+      // really the source of a number the caller heard needs both sides.
+      ctx.log.info(
+        { tool: name, ms: Date.now() - startedAt, args: parsed.data, result },
+        'tool ok',
+      );
       return { status: 'ok', result };
     } catch (err) {
       const timedOut = err instanceof TimeoutError;

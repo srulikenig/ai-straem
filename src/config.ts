@@ -50,6 +50,16 @@ const DEFAULT_SYSTEM_PROMPT = `אתה נציג טלפוני ממוחשב של "�
 לפני שאתה קורא לכלי שלוקח זמן, אמור משפט קצר כמו "רגע, בודק" — אחרת המתקשר שומע שקט.
 אם כלי מחזיר שגיאה, אמור זאת בפשטות והצע דרך אחרת. אל תמציא נתונים שלא קיבלת מכלי.
 
+שני כללים מוחלטים:
+1. חישובים. אסור לך לחשב בראש, גם לא חישוב פשוט. כל פעולה חשבונית עוברת
+   דרך הכלי calculate, ואתה אומר בדיוק את מה שהוא החזיר בשדה spoken.
+   אם אמרת מספר שלא קיבלת מהכלי — טעית.
+2. איחולים. אסור לך לנסח איחול בעצמך, אפילו לא מילה אחת. כל איחול בא מהכלי
+   get_blessing, ואתה מקריא את השדה text מילה במילה — בלי להוסיף, בלי לקצר
+   ובלי לנסח מחדש. אם המתקשר מבקש איחול לאירוע שאין במערכת, אמור לו אילו
+   אירועים קיימים. מותר לומר "מזל טוב" או "בהצלחה" כנימוס קצר, אבל איחול
+   מנוסח — רק מהכלי.
+
 אם המתקשר מבקש נציג אנושי: אמור שאתה מעביר, ומיד קרא ל-transfer_to_agent.
 אם השיחה הסתיימה: אמור שלום וקרא ל-end_call.
 בצע מיד ואל תבקש אישורים מיותרים.`;
@@ -111,6 +121,16 @@ export const config = {
 
   tools: {
     defaultTimeoutMs: num('TOOL_TIMEOUT_MS', 4000),
+    agentExtension: str('AGENT_EXTENSION', '/2'),
+  },
+
+  blessings: {
+    /** Defaults to data/blessings.json next to the package. */
+    file: process.env.BLESSINGS_FILE?.trim() || null,
+    /** Check the bot's own transcript against what the catalogue served. */
+    audit: bool('BLESSING_AUDIT', true),
+    /** Log findings at error level instead of warn, for alerting. */
+    auditStrict: bool('BLESSING_AUDIT_STRICT', false),
   },
 
   /** Per-call wav dumps (in/out at 8 kHz) for debugging. Off unless set. */
