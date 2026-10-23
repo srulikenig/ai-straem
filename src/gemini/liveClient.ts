@@ -51,6 +51,7 @@ export interface GeminiLiveEvents {
 export class GeminiLive extends EventEmitter<GeminiLiveEvents> {
   private session: Session | null = null;
   private closed = false;
+  private setupDone = false;
   private readonly log: Logger;
 
   constructor(private readonly opts: GeminiLiveOptions) {
@@ -84,7 +85,6 @@ export class GeminiLive extends EventEmitter<GeminiLiveEvents> {
       callbacks: {
         onopen: () => {
           this.log.info({ model: this.opts.model }, 'live session open');
-          this.emit('ready');
         },
         onmessage: (msg) => this.onMessage(msg),
         onerror: (e) => {
@@ -98,6 +98,7 @@ export class GeminiLive extends EventEmitter<GeminiLiveEvents> {
         },
       },
     });
+    this.maybeReady();
   }
 
   /** Caller audio, already resampled to the model's input rate. */
@@ -129,8 +130,22 @@ export class GeminiLive extends EventEmitter<GeminiLiveEvents> {
     }
   }
 
+  /**
+   * setupComplete can arrive before connect() resolves, i.e. before
+   * this.session is assigned, and anything sent then is silently dropped.
+   * Ready means both: the model accepts input and we hold the session.
+   */
+  private maybeReady(): void {
+    if (!this.setupDone || !this.session || this.closed) return;
+    this.emit('ready');
+  }
+
   private onMessage(msg: LiveServerMessage): void {
-    if (msg.setupComplete) this.log.debug('setup complete');
+    if (msg.setupComplete) {
+      this.log.debug('setup complete');
+      this.setupDone = true;
+      this.maybeReady();
+    }
 
     const content = msg.serverContent;
     if (content) {
