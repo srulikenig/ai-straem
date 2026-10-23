@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatReport, hasRequest, type RequestReport } from '../src/agent/requestReport.js';
+import { formatReport, hasRequest, reportSubject, type RequestReport } from '../src/agent/requestReport.js';
 
 function report(over: Partial<RequestReport> = {}): RequestReport {
   return {
@@ -40,4 +40,14 @@ test('a silent call with nothing saved is not a request', () => {
   assert.equal(hasRequest(report({ transcript: [{ role: 'bot', text: 'שלום' }] })), false);
   assert.equal(hasRequest(report({ transcript: [{ role: 'caller', text: 'היי' }] })), true);
   assert.equal(hasRequest(report({ answers: { request: 'x' } })), true);
+});
+
+test('the subject names the caller, the request and real urgency only', () => {
+  assert.equal(reportSubject(report()), 'פנייה מ0521234567');
+  assert.equal(
+    reportSubject(report({ answers: { caller_name: 'דוד', request: 'פגישה', urgency: 'דחוף' } })),
+    'דחוף · פנייה מדוד: פגישה',
+  );
+  assert.equal(reportSubject(report({ answers: { caller_name: 'דוד', urgency: 'לא דחוף' } })), 'פנייה מדוד');
+  assert.ok(reportSubject(report({ answers: { request: 'א'.repeat(80) } })).endsWith('…'));
 });

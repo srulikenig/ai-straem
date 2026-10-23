@@ -138,6 +138,19 @@ export const config = {
 
   /** Per-call wav dumps (in/out at 8 kHz) for debugging. Off unless set. */
   recordDir: process.env.RECORD_DIR?.trim() || null,
+
+  /** Request reports by email over SMTP. Off unless EMAIL_HOST and EMAIL_TO are set. */
+  email: {
+    host: process.env.EMAIL_HOST?.trim() || null,
+    port: num('EMAIL_PORT', 587),
+    /** true = TLS from the first byte (465); false = STARTTLS upgrade (587). */
+    secure: bool('EMAIL_SECURE', false),
+    user: process.env.EMAIL_USER?.trim() || null,
+    pass: process.env.EMAIL_PASS?.trim() || null,
+    from: process.env.EMAIL_FROM?.trim() || process.env.EMAIL_USER?.trim() || null,
+    to: process.env.EMAIL_TO?.trim() || null,
+    replyTo: process.env.EMAIL_REPLY_TO?.trim() || null,
+  },
 } as const;
 
 export type Config = typeof config;

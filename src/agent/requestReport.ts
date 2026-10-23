@@ -1,5 +1,7 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import nodemailer, { type Transporter } from 'nodemailer';
+import { config } from '../config.js';
 import type { Logger } from '../logger.js';
 
 export interface TranscriptTurn {
@@ -49,14 +51,21 @@ export function formatReport(r: RequestReport): string {
   return lines.join('\n');
 }
 
+export function reportSubject(r: RequestReport): string {
+  const who = r.answers['caller_name'] ?? r.caller ?? 'מספר חסוי';
+  const what = r.answers['request'];
+  const urgent = r.answers['urgency']?.includes('דחוף') && !r.answers['urgency'].includes('לא') ? 'דחוף · ' : '';
+  return `${urgent}פנייה מ${who}${what ? `: ${what.length > 60 ? `${what.slice(0, 60)}…` : what}` : ''}`;
+}
+
 /** A call where the caller never spoke and nothing was saved is not a request. */
 export function hasRequest(r: RequestReport): boolean {
   return Object.keys(r.answers).length > 0 || r.transcript.some((t) => t.role === 'caller' && t.text.trim());
 }
 
 /**
- * Hands a finished call's request on. For now that means the log and a
- * report.txt beside the recording; sending it by email plugs in here.
+ * Hands a finished call's request on: always to the log, to report.txt beside
+ * the recording when recording is on, and by email when SMTP is configured.
  */
 export async function deliverReport(r: RequestReport, recordingDir: string | null, log: Logger): Promise<void> {
   if (!hasRequest(r)) {
@@ -65,10 +74,40 @@ export async function deliverReport(r: RequestReport, recordingDir: string | nul
   }
   const text = formatReport(r);
   log.info({ report: text, answers: r.answers, recording: r.recording }, 'request report');
-  if (!recordingDir) return;
+  if (recordingDir) {
+    try {
+      await writeFile(join(recordingDir, 'report.txt'), text);
+    } catch (err) {
+      log.error({ err }, 'failed to write the request report');
+    }
+  }
+  if (config.email.host && config.email.to) await emailReport(r, text, log);
+}
+
+let transport: Transporter | null = null;
+
+async function emailReport(r: RequestReport, text: string, log: Logger): Promise<void> {
+  const e = config.email;
+  transport ??= nodemailer.createTransport({
+    host: e.host!,
+    port: e.port,
+    secure: e.secure,
+    ...(e.user && e.pass ? { auth: { user: e.user, pass: e.pass } } : {}),
+  });
+  const html = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   try {
-    await writeFile(join(recordingDir, 'report.txt'), text);
+    const info = await transport.sendMail({
+      from: e.from ?? undefined,
+      to: e.to!,
+      ...(e.replyTo ? { replyTo: e.replyTo } : {}),
+      subject: reportSubject(r),
+      text,
+      // Plain text renders left-to-right in most clients; Hebrew needs dir=rtl.
+      html: `<div dir="rtl" style="white-space:pre-wrap;font-family:Arial,sans-serif">${html}</div>`,
+      attachments: r.recording ? [{ filename: 'call.wav', path: r.recording }] : [],
+    });
+    log.info({ messageId: info.messageId, to: e.to }, 'request report emailed');
   } catch (err) {
-    log.error({ err }, 'failed to write the request report');
+    log.error({ err }, 'failed to email the request report');
   }
 }
