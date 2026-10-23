@@ -123,6 +123,8 @@ export const config = {
   tools: {
     defaultTimeoutMs: num('TOOL_TIMEOUT_MS', 4000),
     agentExtension: str('AGENT_EXTENSION', '/2'),
+    /** Demo lookups (orders, balance, branches) return made-up data; off for a real deployment. */
+    demo: bool('DEMO_TOOLS', true),
   },
 
   blessings: {

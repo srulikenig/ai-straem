@@ -2,7 +2,7 @@ import { config } from '../config.js';
 import { callControlTools } from './callControl.js';
 import { calculatorTool } from './calculator.js';
 import { BlessingCatalog, blessingTools, type Blessing } from './blessings.js';
-import { demoTools } from './demo.js';
+import { demoTools, getCurrentTime } from './demo.js';
 import { ToolRegistry, type ToolDefinition } from './registry.js';
 
 export interface RegistryOptions {
@@ -14,7 +14,7 @@ export interface RegistryOptions {
 const catalog = BlessingCatalog.load(config.blessings.file ?? undefined);
 
 export function buildRegistry(opts: RegistryOptions = {}): ToolRegistry {
-  return new ToolRegistry(config.tools.defaultTimeoutMs)
+  const registry = new ToolRegistry(config.tools.defaultTimeoutMs)
     .registerAll(callControlTools({ defaultAgentExtension: config.tools.agentExtension }))
     .register(calculatorTool)
     .registerAll(
@@ -22,8 +22,9 @@ export function buildRegistry(opts: RegistryOptions = {}): ToolRegistry {
         catalog,
         ...(opts.onBlessingServed ? { onServed: opts.onBlessingServed } : {}),
       }),
-    )
-    .registerAll(demoTools);
+    );
+  // The clock is real data, so it stays when the made-up lookups go.
+  return config.tools.demo ? registry.registerAll(demoTools) : registry.register(getCurrentTime);
 }
 
 export { catalog as blessingCatalog };

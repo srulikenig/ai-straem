@@ -6,6 +6,7 @@ import { GeminiLive } from '../gemini/liveClient.js';
 import type { PbxSession } from '../pbx/session.js';
 import { buildRegistry, type ToolContext, type ToolRegistry } from '../tools/index.js';
 import { BlessingAudit } from './blessingAudit.js';
+import type { RequestReport, TranscriptTurn } from './requestReport.js';
 
 /**
  * Wires one phone call to one model session.
@@ -33,6 +34,8 @@ export class CallBridge {
   private suppressedFrames = 0;
   /** Output transcription arrives in fragments; audited once the turn closes. */
   private botTurn = '';
+  /** The whole conversation, with each speaker's fragments joined into turns. */
+  private readonly transcript: TranscriptTurn[] = [];
 
   constructor(private readonly session: PbxSession) {
     this.audit = new BlessingAudit({ log: session.log, strict: config.blessings.auditStrict });
@@ -134,6 +137,9 @@ export class CallBridge {
     this.gemini.on('transcript', ({ role, text }) => {
       this.session.log.info({ role, text }, 'transcript');
       if (role === 'bot') this.botTurn += text;
+      const last = this.transcript.at(-1);
+      if (last?.role === role) last.text += text;
+      else this.transcript.push({ role, text });
     });
 
     this.gemini.on('turnComplete', () => this.flushBotTurn());
@@ -183,6 +189,18 @@ export class CallBridge {
     this.botTurn = '';
     if (!turn || !config.blessings.audit) return;
     this.audit.checkTurn(turn);
+  }
+
+  report(recordingDir: string | null): RequestReport {
+    return {
+      caller: this.session.caller,
+      callId: this.session.callId,
+      startedAt: new Date(this.session.startedAt),
+      durationMs: this.session.durationMs,
+      answers: { ...this.session.answers },
+      transcript: this.transcript,
+      recording: recordingDir ? `${recordingDir}/call.wav` : null,
+    };
   }
 
   get stats(): Record<string, unknown> {

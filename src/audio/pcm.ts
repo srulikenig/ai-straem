@@ -51,6 +51,45 @@ export function encodeWav(pcm: Buffer, sampleRate: number): Buffer {
   return Buffer.concat([wavHeader(sampleRate, pcm.length), pcm]);
 }
 
+/** A chunk of PCM and when it was heard, in ms from the start of the call. */
+export interface TimedPcm {
+  atMs: number;
+  pcm: Buffer;
+}
+
+/**
+ * Lays timestamped chunks on one timeline. A chunk goes straight after the
+ * previous one unless it came noticeably later, in which case the gap becomes
+ * silence — so network jitter never overlaps audio, but real pauses survive.
+ */
+export function layTrack(chunks: readonly TimedPcm[], sampleRate: number, slackMs = 100): Buffer {
+  const bytesAt = (ms: number) => Math.max(0, Math.round((ms * sampleRate) / 1000)) * BYTES_PER_SAMPLE;
+  const slack = bytesAt(slackMs);
+  const placed: { offset: number; pcm: Buffer }[] = [];
+  let cursor = 0;
+  for (const { atMs, pcm } of chunks) {
+    const due = bytesAt(atMs);
+    if (due - cursor > slack) cursor = due;
+    placed.push({ offset: cursor, pcm });
+    cursor += pcm.length;
+  }
+  const out = Buffer.alloc(cursor);
+  for (const { offset, pcm } of placed) pcm.copy(out, offset);
+  return out;
+}
+
+/** Sums two tracks sample by sample; the shorter one counts as silence. */
+export function mixPcm(a: Buffer, b: Buffer): Buffer {
+  const samples = Math.floor(Math.max(a.length, b.length) / BYTES_PER_SAMPLE);
+  const out = Buffer.alloc(samples * BYTES_PER_SAMPLE);
+  const at = (buf: Buffer, off: number) => (off + 1 < buf.length ? buf.readInt16LE(off) : 0);
+  for (let off = 0; off < out.length; off += BYTES_PER_SAMPLE) {
+    const s = at(a, off) + at(b, off);
+    out.writeInt16LE(s > 32767 ? 32767 : s < -32768 ? -32768 : s, off);
+  }
+  return out;
+}
+
 export interface DecodedWav {
   pcm: Buffer;
   sampleRate: number;

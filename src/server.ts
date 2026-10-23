@@ -8,6 +8,7 @@ import { config } from './config.js';
 import { logger } from './logger.js';
 import { PbxSession } from './pbx/session.js';
 import { CallBridge } from './agent/bridge.js';
+import { deliverReport } from './agent/requestReport.js';
 
 /** Constant-time compare, length-safe. */
 function secretMatches(presented: string, expected: string): boolean {
@@ -76,6 +77,7 @@ export function startServer(): Server {
 
     const bridge = new CallBridge(session);
     session.on('close', () => bridge.stop());
+    session.on('finished', (recordingDir) => void deliverReport(bridge.report(recordingDir), recordingDir, session.log));
     bridge.start().catch((err) => {
       session.log.error({ err }, 'failed to start the model session; ending the call');
       session.endCall();

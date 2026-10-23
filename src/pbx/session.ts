@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import type { WebSocket } from 'ws';
 import type { Logger } from '../logger.js';
 import { config } from '../config.js';
-import { encodeWav, frameBytes } from '../audio/pcm.js';
+import { encodeWav, frameBytes, layTrack, mixPcm, type TimedPcm } from '../audio/pcm.js';
 import { PbxWriter } from './writer.js';
 import {
   clearCommand,
@@ -35,6 +35,8 @@ export interface PbxSessionEvents {
   dtmf: [string];
   hangup: [];
   close: [];
+  /** After the recordings are on disk; null when recording is off or failed. */
+  finished: [recordingDir: string | null];
 }
 
 /** Cap in-memory recordings so a stuck call cannot eat the box. */
@@ -53,12 +55,16 @@ export class PbxSession extends EventEmitter<PbxSessionEvents> implements CallAc
   caller: string | null = null;
   extension: string | null = null;
   startedAt = Date.now();
+  /** Everything saved with save_answer, last value wins. */
+  readonly answers: Record<string, string> = {};
 
   private closed = false;
   private drainTimer: NodeJS.Timeout | null = null;
   private maxCallTimer: NodeJS.Timeout | null = null;
-  private recIn: Buffer[] = [];
-  private recOut: Buffer[] = [];
+  /** Recording timeline origin; unlike startedAt it never moves. */
+  private readonly connectedAt = Date.now();
+  private recIn: TimedPcm[] = [];
+  private recOut: TimedPcm[] = [];
   private recInBytes = 0;
   private recOutBytes = 0;
 
@@ -73,6 +79,13 @@ export class PbxSession extends EventEmitter<PbxSessionEvents> implements CallAc
       frameMs: config.pbx.frameMs,
       queueWarnMs: config.pbx.queueWarnMs,
       log: this.log,
+      // Recorded as sent, not as queued: audio dropped by a barge-in was never heard.
+      onFrameSent: (frame) => {
+        if (config.recordDir && this.recOutBytes < MAX_RECORD_BYTES) {
+          this.recOut.push({ atMs: Date.now() - this.connectedAt, pcm: frame });
+          this.recOutBytes += frame.length;
+        }
+      },
     });
 
     ws.on('message', (data, isBinary) => this.onMessage(data as Buffer, isBinary));
@@ -100,10 +113,6 @@ export class PbxSession extends EventEmitter<PbxSessionEvents> implements CallAc
   /** Queue bot audio (8 kHz PCM) for playback. */
   play(pcm8k: Buffer): void {
     this.writer.enqueueAudio(pcm8k);
-    if (config.recordDir && this.recOutBytes < MAX_RECORD_BYTES) {
-      this.recOut.push(pcm8k);
-      this.recOutBytes += pcm8k.length;
-    }
   }
 
   /** Barge-in: drop our queue and tell the PBX to drop its own. */
@@ -115,6 +124,7 @@ export class PbxSession extends EventEmitter<PbxSessionEvents> implements CallAc
   }
 
   saveAnswer(name: string, value: string): void {
+    this.answers[name] = value;
     this.writer.sendCommand(saveAnswerCommand(name, value));
   }
 
@@ -151,7 +161,7 @@ export class PbxSession extends EventEmitter<PbxSessionEvents> implements CallAc
   private onMessage(data: Buffer, isBinary: boolean): void {
     if (isBinary) {
       if (config.recordDir && this.recInBytes < MAX_RECORD_BYTES) {
-        this.recIn.push(Buffer.from(data));
+        this.recIn.push({ atMs: Date.now() - this.connectedAt, pcm: Buffer.from(data) });
         this.recInBytes += data.length;
       }
       this.emit('audio', data);
@@ -197,27 +207,38 @@ export class PbxSession extends EventEmitter<PbxSessionEvents> implements CallAc
     if (this.maxCallTimer) clearTimeout(this.maxCallTimer);
     this.writer.stop();
     this.emit('close');
-    await this.dumpRecordings();
+    const recordingDir = await this.dumpRecordings();
     this.log.info({ durationMs: this.durationMs }, 'call finished');
+    this.emit('finished', recordingDir);
   }
 
-  private async dumpRecordings(): Promise<void> {
-    if (!config.recordDir) return;
+  /** caller.wav and bot.wav per side, call.wav as the caller heard it. */
+  private async dumpRecordings(): Promise<string | null> {
+    if (!config.recordDir) return null;
     try {
       const dir = join(config.recordDir, `${new Date(this.startedAt).toISOString().replace(/[:.]/g, '-')}_${this.id}`);
       await mkdir(dir, { recursive: true });
       const rate = config.pbx.sampleRate;
+      const caller = layTrack(this.recIn, rate);
+      const bot = layTrack(this.recOut, rate);
       await Promise.all([
-        writeFile(join(dir, 'caller.wav'), encodeWav(Buffer.concat(this.recIn), rate)),
-        writeFile(join(dir, 'bot.wav'), encodeWav(Buffer.concat(this.recOut), rate)),
+        writeFile(join(dir, 'caller.wav'), encodeWav(caller, rate)),
+        writeFile(join(dir, 'bot.wav'), encodeWav(bot, rate)),
+        writeFile(join(dir, 'call.wav'), encodeWav(mixPcm(caller, bot), rate)),
         writeFile(
           join(dir, 'meta.json'),
-          JSON.stringify({ id: this.id, callId: this.callId, caller: this.caller, extension: this.extension, durationMs: this.durationMs }, null, 2),
+          JSON.stringify(
+            { id: this.id, callId: this.callId, caller: this.caller, extension: this.extension, durationMs: this.durationMs, answers: this.answers },
+            null,
+            2,
+          ),
         ),
       ]);
       this.log.info({ dir }, 'recordings written');
+      return dir;
     } catch (err) {
       this.log.error({ err }, 'failed to write recordings');
+      return null;
     }
   }
 }

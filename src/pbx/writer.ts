@@ -7,6 +7,8 @@ export interface WriterOptions {
   frameMs: number;
   queueWarnMs: number;
   log: Logger;
+  /** Called with each audio frame as it leaves — i.e. when the caller hears it. */
+  onFrameSent?: (frame: Buffer) => void;
 }
 
 /**
@@ -134,6 +136,9 @@ export class PbxWriter {
     }
 
     const frame = this.audio.shift();
-    if (frame) this.ws.send(frame, { binary: true });
+    if (frame) {
+      this.ws.send(frame, { binary: true });
+      this.opts.onFrameSent?.(frame);
+    }
   }
 }

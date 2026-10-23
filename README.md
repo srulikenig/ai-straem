@@ -63,6 +63,7 @@ npm run dev
 | `data/blessings.json` | **קטלוג האיחולים — ערוך אותו** |
 | `src/tools/demo.ts` | כלי דמו שמחזירים מידע — להחלפה בלוגיקה אמיתית |
 | `src/agent/bridge.ts` | מחבר את שלושתם |
+| `src/agent/requestReport.ts` | דוח פנייה בסוף שיחה: פרטים שנשמרו, תמלול והקלטה (כרגע ללוג ול-`report.txt`) |
 | `scripts/mock-pbx.ts` | מרכזייה מדומה לבדיקות מקומיות |
 
 ## כלים

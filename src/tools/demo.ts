@@ -24,7 +24,7 @@ import {
  *   feels on a live call can be heard rather than imagined.
  */
 
-const getCurrentTime: ToolDefinition<Record<string, never>> = {
+export const getCurrentTime: ToolDefinition<Record<string, never>> = {
   name: 'get_current_time',
   description: 'השעה והתאריך הנוכחיים בישראל. השתמש כשהמתקשר שואל מה השעה או מה התאריך היום.',
   parameters: { type: Type.OBJECT, properties: {} },
