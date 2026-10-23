@@ -14,7 +14,7 @@ export interface GeminiLiveOptions {
   apiKey: string;
   model: string;
   voice: string;
-  languageCode: string;
+  languageCode: string | null;
   temperature: number;
   systemInstruction: string;
   functionDeclarations: FunctionDeclaration[];
@@ -72,7 +72,7 @@ export class GeminiLive extends EventEmitter<GeminiLiveEvents> {
         temperature: this.opts.temperature,
         systemInstruction: this.opts.systemInstruction,
         speechConfig: {
-          languageCode: this.opts.languageCode,
+          ...(this.opts.languageCode ? { languageCode: this.opts.languageCode } : {}),
           voiceConfig: { prebuiltVoiceConfig: { voiceName: this.opts.voice } },
         },
         ...(this.opts.functionDeclarations.length

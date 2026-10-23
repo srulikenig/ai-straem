@@ -93,7 +93,8 @@ export const config = {
     apiKey: mode === 'bot' ? str('GEMINI_API_KEY') : (process.env.GEMINI_API_KEY ?? ''),
     model: str('GEMINI_MODEL', 'gemini-2.5-flash-native-audio-preview-09-2025'),
     voice: str('GEMINI_VOICE', 'Aoede'),
-    languageCode: str('GEMINI_LANGUAGE', 'he-IL'),
+    /** Native-audio models reject an explicit code (he-IL included) and detect the language themselves. */
+    languageCode: process.env.GEMINI_LANGUAGE?.trim() || null,
     temperature: num('GEMINI_TEMPERATURE', 0.7),
     inputSampleRate: 16000,
     outputSampleRate: 24000,
