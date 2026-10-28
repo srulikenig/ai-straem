@@ -71,6 +71,8 @@ export function callControlTools(opts: CallControlOptions): ToolDefinition<never
       properties: { reason: { type: Type.STRING, description: 'סיבת הסיום במשפט קצר, לתיעוד.' } },
     },
     input: z.object({ reason: z.string().max(200).optional() }),
+    // The goodbye is already said; a blocking reply made the model say it again.
+    silent: true,
     handler: (args, ctx) => {
       if (ctx.call.closing) return { ended: false, message: 'השיחה כבר בתהליך סיום' };
       if (args.reason) ctx.call.saveAnswer('end_reason', args.reason);

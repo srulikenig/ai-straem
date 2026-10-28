@@ -42,6 +42,11 @@ export interface PbxSessionEvents {
 /** Cap in-memory recordings so a stuck call cannot eat the box. */
 const MAX_RECORD_BYTES = 10 * 60 * config.pbx.sampleRate * 2;
 
+/** After our queue empties, how long the line must stay quiet before a final command goes out. */
+const FINAL_QUIET_MS = 800;
+/** Never hold a final command longer than this, whatever is still playing. */
+const FINAL_MAX_WAIT_MS = 20_000;
+
 /**
  * One phone call: the PBX socket, the paced writer, and the call-control
  * surface tools reach for. Deliberately knows nothing about any AI model.
@@ -59,6 +64,9 @@ export class PbxSession extends EventEmitter<PbxSessionEvents> implements CallAc
   readonly answers: Record<string, string> = {};
 
   private closed = false;
+  /** A final command is waiting for the closing audio to finish playing. */
+  private finalPending = false;
+  private finalWaitTimer: NodeJS.Timeout | null = null;
   private drainTimer: NodeJS.Timeout | null = null;
   private maxCallTimer: NodeJS.Timeout | null = null;
   /** Recording timeline origin; unlike startedAt it never moves. */
@@ -103,7 +111,7 @@ export class PbxSession extends EventEmitter<PbxSessionEvents> implements CallAc
   }
 
   get closing(): boolean {
-    return this.writer.finalSent || this.closed;
+    return this.finalPending || this.writer.finalSent || this.closed;
   }
 
   get durationMs(): number {
@@ -112,6 +120,9 @@ export class PbxSession extends EventEmitter<PbxSessionEvents> implements CallAc
 
   /** Queue bot audio (8 kHz PCM) for playback. */
   play(pcm8k: Buffer): void {
+    // Once the final command is out the PBX drops the line within a second;
+    // anything new would be heard as half a sentence.
+    if (this.writer.finalSent) return;
     this.writer.enqueueAudio(pcm8k);
   }
 
@@ -141,9 +152,13 @@ export class PbxSession extends EventEmitter<PbxSessionEvents> implements CallAc
   }
 
   /**
-   * Send the one final command, then keep pacing audio so the caller actually
-   * hears the closing sentence — the PBX drains for up to six seconds before it
-   * acts. We hold the socket open a little longer than that, then give up.
+   * Send the one final command once the caller has heard everything queued.
+   *
+   * The PBX was documented to drain its buffer before acting, but on real calls
+   * it closed the socket within a second of a hangup and cut off the closing
+   * sentence — which the model produces faster than real time, so most of it
+   * was still in our queue. So the command waits until our queue has played
+   * out and the line has stayed quiet a moment longer for the PBX's own buffer.
    */
   private sendFinal(cmd: OutboundCommand): void {
     if (!isFinalCommand(cmd)) throw new Error(`not a final command: ${cmd.type}`);
@@ -151,11 +166,27 @@ export class PbxSession extends EventEmitter<PbxSessionEvents> implements CallAc
       this.log.warn({ cmd }, 'call already closing; final command ignored');
       return;
     }
-    this.writer.sendCommand(cmd);
-    this.drainTimer = setTimeout(() => {
-      this.log.info('drain window elapsed; closing socket');
-      this.ws.close(1000, 'done');
-    }, config.pbx.finalDrainMs);
+    this.finalPending = true;
+    const started = Date.now();
+    let quietSince: number | null = null;
+    const check = () => {
+      if (this.closed) return;
+      const now = Date.now();
+      if (this.writer.queuedMs > 0) quietSince = null;
+      else quietSince ??= now;
+      const heard = quietSince !== null && now - quietSince >= FINAL_QUIET_MS;
+      if (!heard && now - started < FINAL_MAX_WAIT_MS) {
+        this.finalWaitTimer = setTimeout(check, 50);
+        return;
+      }
+      this.log.info({ cmd, waitedMs: now - started }, 'playback finished; sending final command');
+      this.writer.sendCommand(cmd);
+      this.drainTimer = setTimeout(() => {
+        this.log.info('drain window elapsed; closing socket');
+        this.ws.close(1000, 'done');
+      }, config.pbx.finalDrainMs);
+    };
+    check();
   }
 
   private onMessage(data: Buffer, isBinary: boolean): void {
@@ -203,6 +234,7 @@ export class PbxSession extends EventEmitter<PbxSessionEvents> implements CallAc
   private async finish(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    if (this.finalWaitTimer) clearTimeout(this.finalWaitTimer);
     if (this.drainTimer) clearTimeout(this.drainTimer);
     if (this.maxCallTimer) clearTimeout(this.maxCallTimer);
     this.writer.stop();
