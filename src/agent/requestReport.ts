@@ -2,16 +2,16 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import nodemailer, { type Transporter } from 'nodemailer';
 import { config } from '../config.js';
+import { getStore, type TranscriptTurn, type User } from '../db.js';
 import type { Logger } from '../logger.js';
 
-export interface TranscriptTurn {
-  role: 'caller' | 'bot';
-  text: string;
-}
+export type { TranscriptTurn };
 
 /** One call, boiled down to what the person it was for needs to act on it. */
 export interface RequestReport {
   caller: string | null;
+  /** Set when the caller's number is in the owner's contacts. */
+  contactName: string | null;
   callId: string | null;
   startedAt: Date;
   durationMs: number;
@@ -22,26 +22,32 @@ export interface RequestReport {
   recording: string | null;
 }
 
-/** The fields the prompt asks for, in the order a reader wants them. */
-const LABELS: Record<string, string> = {
+/** Field names the prompts ask for, in the order a reader wants them. */
+export const ANSWER_LABELS: Record<string, string> = {
   caller_name: 'שם',
+  message: 'ההודעה',
   request: 'הפנייה',
   urgency: 'דחיפות',
-  callback_time: 'זמן נוח לחזור',
   callback_phone: 'טלפון לחזרה',
+  callback_time: 'זמן נוח לחזור',
 };
+
+function from(r: RequestReport): string {
+  const number = r.caller ?? 'מספר חסוי';
+  return r.contactName ? `${r.contactName} (${number})` : number;
+}
 
 export function formatReport(r: RequestReport): string {
   const when = r.startedAt.toLocaleString('he-IL', { timeZone: 'Asia/Jerusalem' });
   const seconds = Math.round(r.durationMs / 1000);
-  const known = Object.keys(LABELS).filter((k) => r.answers[k]);
-  const other = Object.keys(r.answers).filter((k) => !(k in LABELS));
+  const known = Object.keys(ANSWER_LABELS).filter((k) => r.answers[k]);
+  const other = Object.keys(r.answers).filter((k) => !(k in ANSWER_LABELS));
 
   const lines = [
-    `פנייה חדשה מ-${r.caller ?? 'מספר חסוי'}`,
+    `פנייה חדשה מ-${from(r)}`,
     `${when} · ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')} דקות`,
     '',
-    ...known.map((k) => `${LABELS[k]}: ${r.answers[k]}`),
+    ...known.map((k) => `${ANSWER_LABELS[k]}: ${r.answers[k]}`),
     ...other.map((k) => `${k}: ${r.answers[k]}`),
     ...(known.length + other.length === 0 ? ['(הבוט לא שמר פרטים — ראה תמלול)'] : []),
     '',
@@ -52,8 +58,8 @@ export function formatReport(r: RequestReport): string {
 }
 
 export function reportSubject(r: RequestReport): string {
-  const who = r.answers['caller_name'] ?? r.caller ?? 'מספר חסוי';
-  const what = r.answers['request'];
+  const who = r.answers['caller_name'] ?? r.contactName ?? r.caller ?? 'מספר חסוי';
+  const what = r.answers['message'] ?? r.answers['request'];
   const urgent = r.answers['urgency']?.includes('דחוף') && !r.answers['urgency'].includes('לא') ? 'דחוף · ' : '';
   return `${urgent}פנייה מ${who}${what ? `: ${what.length > 60 ? `${what.slice(0, 60)}…` : what}` : ''}`;
 }
@@ -64,16 +70,34 @@ export function hasRequest(r: RequestReport): boolean {
 }
 
 /**
- * Hands a finished call's request on: always to the log, to report.txt beside
- * the recording when recording is on, and by email when SMTP is configured.
+ * Hands a finished call's request on: the log, the owner's request history,
+ * report.txt beside the recording, and the owner's inbox when SMTP is set up.
  */
-export async function deliverReport(r: RequestReport, recordingDir: string | null, log: Logger): Promise<void> {
+export async function deliverReport(r: RequestReport, recordingDir: string | null, owner: User, log: Logger): Promise<void> {
   if (!hasRequest(r)) {
     log.info('no request in this call; nothing to deliver');
     return;
   }
   const text = formatReport(r);
-  log.info({ report: text, answers: r.answers, recording: r.recording }, 'request report');
+  log.info({ report: text, answers: r.answers, recording: r.recording, owner: owner.id }, 'request report');
+
+  let requestId: number | null = null;
+  try {
+    requestId = getStore().insertRequest({
+      userId: owner.id,
+      callId: r.callId,
+      caller: r.caller,
+      contactName: r.contactName,
+      startedAt: r.startedAt.toISOString(),
+      durationMs: r.durationMs,
+      answers: r.answers,
+      transcript: r.transcript,
+      recording: r.recording,
+    });
+  } catch (err) {
+    log.error({ err }, 'failed to save the request');
+  }
+
   if (recordingDir) {
     try {
       await writeFile(join(recordingDir, 'report.txt'), text);
@@ -81,12 +105,16 @@ export async function deliverReport(r: RequestReport, recordingDir: string | nul
       log.error({ err }, 'failed to write the request report');
     }
   }
-  if (config.email.host && config.email.to) await emailReport(r, text, log);
+
+  const to = owner.notifyEmail || config.email.to;
+  if (config.email.host && to && (await emailReport(r, text, to, log)) && requestId !== null) {
+    getStore().markEmailed(requestId);
+  }
 }
 
 let transport: Transporter | null = null;
 
-async function emailReport(r: RequestReport, text: string, log: Logger): Promise<void> {
+async function emailReport(r: RequestReport, text: string, to: string, log: Logger): Promise<boolean> {
   const e = config.email;
   transport ??= nodemailer.createTransport({
     host: e.host!,
@@ -98,7 +126,7 @@ async function emailReport(r: RequestReport, text: string, log: Logger): Promise
   try {
     const info = await transport.sendMail({
       from: e.from ?? undefined,
-      to: e.to!,
+      to,
       ...(e.replyTo ? { replyTo: e.replyTo } : {}),
       subject: reportSubject(r),
       text,
@@ -106,8 +134,10 @@ async function emailReport(r: RequestReport, text: string, log: Logger): Promise
       html: `<div dir="rtl" style="white-space:pre-wrap;font-family:Arial,sans-serif">${html}</div>`,
       attachments: r.recording ? [{ filename: 'call.wav', path: r.recording }] : [],
     });
-    log.info({ messageId: info.messageId, to: e.to }, 'request report emailed');
+    log.info({ messageId: info.messageId, to }, 'request report emailed');
+    return true;
   } catch (err) {
     log.error({ err }, 'failed to email the request report');
+    return false;
   }
 }

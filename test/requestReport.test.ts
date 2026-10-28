@@ -5,6 +5,7 @@ import { formatReport, hasRequest, reportSubject, type RequestReport } from '../
 function report(over: Partial<RequestReport> = {}): RequestReport {
   return {
     caller: '0521234567',
+    contactName: null,
     callId: 'c1',
     startedAt: new Date('2026-10-23T07:00:00Z'),
     durationMs: 95_000,
@@ -50,4 +51,10 @@ test('the subject names the caller, the request and real urgency only', () => {
   );
   assert.equal(reportSubject(report({ answers: { caller_name: 'דוד', urgency: 'לא דחוף' } })), 'פנייה מדוד');
   assert.ok(reportSubject(report({ answers: { request: 'א'.repeat(80) } })).endsWith('…'));
+});
+
+test('a known contact is named in the header and the subject', () => {
+  const r = report({ contactName: 'שלמה לוי', answers: { message: 'תחזור אליי' } });
+  assert.ok(formatReport(r).startsWith('פנייה חדשה מ-שלמה לוי (0521234567)'));
+  assert.equal(reportSubject(r), 'פנייה משלמה לוי: תחזור אליי');
 });

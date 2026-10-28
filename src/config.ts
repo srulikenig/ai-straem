@@ -139,7 +139,10 @@ export const config = {
   /** Per-call wav dumps (in/out at 8 kHz) for debugging. Off unless set. */
   recordDir: process.env.RECORD_DIR?.trim() || null,
 
-  /** Request reports by email over SMTP. Off unless EMAIL_HOST and EMAIL_TO are set. */
+  /**
+   * Request reports by email over SMTP, off unless EMAIL_HOST is set. Each
+   * report goes to its owner's notify address; EMAIL_TO is the fallback.
+   */
   email: {
     host: process.env.EMAIL_HOST?.trim() || null,
     port: num('EMAIL_PORT', 587),
@@ -150,6 +153,16 @@ export const config = {
     from: process.env.EMAIL_FROM?.trim() || process.env.EMAIL_USER?.trim() || null,
     to: process.env.EMAIL_TO?.trim() || null,
     replyTo: process.env.EMAIL_REPLY_TO?.trim() || null,
+  },
+
+  /** Management web app: users, contacts, per-user instructions, request history. */
+  app: {
+    dbPath: str('DB_PATH', './db/ai-straem.sqlite'),
+    /** Creates the first admin on an empty database; ignored once any user exists. */
+    adminEmail: process.env.ADMIN_EMAIL?.trim() || null,
+    adminPassword: process.env.ADMIN_PASSWORD?.trim() || null,
+    /** Session cookies are Secure unless this is false (plain-http local testing). */
+    secureCookies: bool('SECURE_COOKIES', true),
   },
 } as const;
 

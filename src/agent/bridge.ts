@@ -7,6 +7,17 @@ import type { PbxSession } from '../pbx/session.js';
 import { buildRegistry, type ToolContext, type ToolRegistry } from '../tools/index.js';
 import { BlessingAudit } from './blessingAudit.js';
 import type { RequestReport, TranscriptTurn } from './requestReport.js';
+import type { Contact, User } from '../db.js';
+
+/** Whose line was called and how the bot behaves on it — built per call. */
+export interface CallProfile {
+  owner: User;
+  contact: Contact | null;
+  systemPrompt: string;
+  /** The nudge that makes the model open the call. */
+  opening: string;
+  voice: string;
+}
 
 /**
  * Wires one phone call to one model session.
@@ -37,18 +48,22 @@ export class CallBridge {
   /** The whole conversation, with each speaker's fragments joined into turns. */
   private readonly transcript: TranscriptTurn[] = [];
 
-  constructor(private readonly session: PbxSession) {
+  constructor(
+    private readonly session: PbxSession,
+    private readonly profile: CallProfile,
+  ) {
     this.audit = new BlessingAudit({ log: session.log, strict: config.blessings.auditStrict });
     this.registry = buildRegistry({
+      assistant: true,
       onBlessingServed: (blessing) => this.audit.recordServed(blessing),
     });
     this.gemini = new GeminiLive({
       apiKey: config.gemini.apiKey,
       model: config.gemini.model,
-      voice: config.gemini.voice,
+      voice: profile.voice,
       languageCode: config.gemini.languageCode,
       temperature: config.gemini.temperature,
-      systemInstruction: config.gemini.systemPrompt,
+      systemInstruction: profile.systemPrompt,
       functionDeclarations: this.registry.functionDeclarations(),
       inputSampleRate: config.gemini.inputSampleRate,
       transcripts: config.gemini.transcripts,
@@ -106,9 +121,7 @@ export class CallBridge {
       this.ready = true;
       // A voice model waits to be spoken to; the caller waits for the answer.
       // Without this nudge both sides sit in silence until someone gives up.
-      this.gemini.sendText(
-        `(השיחה נפתחה כעת${this.session.caller ? `. מספר המתקשר: ${this.session.caller}` : ''}. פתח אתה, במשפט אחד: "${config.gemini.greeting}")`,
-      );
+      this.gemini.sendText(this.profile.opening);
     });
 
     this.gemini.on('audio', (pcm24k) => {
@@ -194,6 +207,7 @@ export class CallBridge {
   report(recordingDir: string | null): RequestReport {
     return {
       caller: this.session.caller,
+      contactName: this.profile.contact?.name ?? null,
       callId: this.session.callId,
       startedAt: new Date(this.session.startedAt),
       durationMs: this.session.durationMs,

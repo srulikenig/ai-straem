@@ -3,12 +3,19 @@ import { createServer as createHttpsServer } from 'node:https';
 import { readFileSync } from 'node:fs';
 import { timingSafeEqual } from 'node:crypto';
 import type { Duplex } from 'node:stream';
-import { WebSocketServer } from 'ws';
+import { WebSocketServer, type WebSocket } from 'ws';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { PbxSession } from './pbx/session.js';
-import { CallBridge } from './agent/bridge.js';
+import { CallBridge, type CallProfile } from './agent/bridge.js';
 import { deliverReport } from './agent/requestReport.js';
+import { composeSystemPrompt, globalPrompt, openingNudge } from './agent/prompt.js';
+import { getStore, type User } from './db.js';
+import { normalizePhone } from './contacts.js';
+import { handleWeb } from './web/app.js';
+
+/** How long to wait for the PBX `start` message (it carries the caller id) before starting anyway. */
+const START_WAIT_MS = 3000;
 
 /** Constant-time compare, length-safe. */
 function secretMatches(presented: string, expected: string): boolean {
@@ -18,12 +25,41 @@ function secretMatches(presented: string, expected: string): boolean {
   return timingSafeEqual(a, b);
 }
 
-function authorized(req: IncomingMessage): boolean {
+function bearer(req: IncomingMessage): string | null {
   const header = req.headers['authorization'];
-  if (typeof header !== 'string') return false;
+  if (typeof header !== 'string') return null;
   const [scheme, token] = header.split(' ');
-  if (scheme?.toLowerCase() !== 'bearer' || !token) return false;
-  return secretMatches(token.trim(), config.server.authSecret);
+  return scheme?.toLowerCase() === 'bearer' && token ? token.trim() : null;
+}
+
+/**
+ * Which line a PBX connection belongs to. Each user has their own channel,
+ * /voice/<key> with its own secret. The original single channel, /voice with
+ * AUTH_SECRET, still works and belongs to the first admin.
+ */
+function resolveChannel(pathname: string): { owner: User | null; secret: string } | null {
+  const base = config.server.path;
+  if (pathname === base) {
+    return { owner: config.mode === 'bot' ? getStore().getLegacyChannelOwner() : null, secret: config.server.authSecret };
+  }
+  if (!pathname.startsWith(`${base}/`)) return null;
+  const user = getStore().getUserByChannelKey(pathname.slice(base.length + 1));
+  return user?.active ? { owner: user, secret: user.channelSecret } : null;
+}
+
+function callProfile(owner: User, caller: string | null): CallProfile {
+  const store = getStore();
+  const fresh = store.getUser(owner.id) ?? owner; // pick up settings saved since the socket opened
+  const phone = caller ? normalizePhone(caller) : null;
+  const contact = phone ? store.findContactByPhone(fresh.id, phone) : null;
+  const ctx = { caller, contact };
+  return {
+    owner: fresh,
+    contact,
+    systemPrompt: composeSystemPrompt(globalPrompt(store), fresh, ctx),
+    opening: openingNudge(fresh, ctx),
+    voice: fresh.voice || config.gemini.voice,
+  };
 }
 
 export function startServer(): Server {
@@ -42,7 +78,7 @@ export function startServer(): Server {
       res.end(JSON.stringify({ ok: true, mode: config.mode, calls: wss.clients.size }));
       return;
     }
-    res.writeHead(404).end();
+    void handleWeb(req, res);
   });
 
   const wss = new WebSocketServer({ noServer: true });
@@ -51,37 +87,21 @@ export function startServer(): Server {
   // socket that opens and then dies for no visible reason.
   http.on('upgrade', (req, socket: Duplex, head) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
-    if (url.pathname !== config.server.path) {
+    const channel = resolveChannel(url.pathname);
+    if (!channel) {
       logger.warn({ path: url.pathname }, 'upgrade rejected: unknown path');
       socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
       socket.destroy();
       return;
     }
-    if (!authorized(req)) {
-      logger.warn({ ip: req.socket.remoteAddress }, 'upgrade rejected: bad or missing bearer token');
+    const token = bearer(req);
+    if (!token || !secretMatches(token, channel.secret)) {
+      logger.warn({ ip: req.socket.remoteAddress, path: url.pathname }, 'upgrade rejected: bad or missing bearer token');
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;
     }
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
-  });
-
-  wss.on('connection', (ws, req) => {
-    const session = new PbxSession(ws, logger);
-    session.log.info({ ip: req.socket.remoteAddress, mode: config.mode }, 'call connected');
-
-    if (config.mode === 'echo') {
-      attachEcho(session);
-      return;
-    }
-
-    const bridge = new CallBridge(session);
-    session.on('close', () => bridge.stop());
-    session.on('finished', (recordingDir) => void deliverReport(bridge.report(recordingDir), recordingDir, session.log));
-    bridge.start().catch((err) => {
-      session.log.error({ err }, 'failed to start the model session; ending the call');
-      session.endCall();
-    });
+    wss.handleUpgrade(req, socket, head, (ws) => onCall(ws, req, channel.owner));
   });
 
   http.listen(config.server.port, config.server.host, () => {
@@ -92,6 +112,38 @@ export function startServer(): Server {
   });
 
   return http;
+}
+
+function onCall(ws: WebSocket, req: IncomingMessage, owner: User | null): void {
+  const session = new PbxSession(ws, logger);
+  session.log.info({ ip: req.socket.remoteAddress, mode: config.mode, owner: owner?.id ?? null }, 'call connected');
+
+  if (config.mode === 'echo' || !owner) {
+    attachEcho(session);
+    return;
+  }
+
+  // The prompt depends on who is calling, and the caller id arrives in
+  // `start`, so the model session opens only once that message is in.
+  let bridge: CallBridge | null = null;
+  const begin = () => {
+    clearTimeout(fallback);
+    if (bridge || session.closing) return;
+    bridge = new CallBridge(session, callProfile(owner, session.caller));
+    bridge.start().catch((err) => {
+      session.log.error({ err }, 'failed to start the model session; ending the call');
+      session.endCall();
+    });
+  };
+  const fallback = setTimeout(begin, START_WAIT_MS);
+  session.once('start', begin);
+  session.on('close', () => {
+    clearTimeout(fallback);
+    bridge?.stop();
+  });
+  session.on('finished', (recordingDir) => {
+    if (bridge) void deliverReport(bridge.report(recordingDir), recordingDir, owner, session.log);
+  });
 }
 
 /**

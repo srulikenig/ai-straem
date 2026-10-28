@@ -1,7 +1,9 @@
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { startServer } from './server.js';
+import { bootstrapAdmin } from './web/app.js';
 
+if (config.mode === 'bot') await bootstrapAdmin();
 const server = startServer();
 
 function shutdown(signal: string): void {
