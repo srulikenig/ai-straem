@@ -4,6 +4,7 @@ import nodemailer, { type Transporter } from 'nodemailer';
 import { config } from '../config.js';
 import { getStore, type TranscriptTurn, type User } from '../db.js';
 import type { Logger } from '../logger.js';
+import { transcribeCall } from './transcribe.js';
 
 export type { TranscriptTurn };
 
@@ -77,6 +78,10 @@ export async function deliverReport(r: RequestReport, recordingDir: string | nul
   if (!hasRequest(r)) {
     log.info('no request in this call; nothing to deliver');
     return;
+  }
+  if (config.stt.enabled && r.recording) {
+    const transcript = await transcribeCall(r.recording, r.transcript, log);
+    if (transcript) r = { ...r, transcript };
   }
   const text = formatReport(r);
   log.info({ report: text, answers: r.answers, recording: r.recording, owner: owner.id }, 'request report');

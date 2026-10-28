@@ -65,7 +65,7 @@ export function callControlTools(opts: CallControlOptions): ToolDefinition<never
   const endCall: ToolDefinition<{ reason?: string }> = {
     name: 'end_call',
     description:
-      'סיום השיחה וניתוק. קרא לכלי רק אחרי שהמתקשר ענה על כל מה ששאלת ואמר שאין לו עוד מה להוסיף, ואחרי שאמרת משפט סיום. לעולם אל תקרא לו מיד אחרי ששאלת שאלה.',
+      'סיום השיחה וניתוק. קרא לכלי רק אחרי שהמתקשר ענה על כל מה ששאלת, ואחרי שאמרת משפט סיום. לעולם אל תקרא לו מיד אחרי ששאלת שאלה.',
     parameters: {
       type: Type.OBJECT,
       properties: { reason: { type: Type.STRING, description: 'סיבת הסיום במשפט קצר, לתיעוד.' } },

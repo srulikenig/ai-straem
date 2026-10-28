@@ -107,6 +107,17 @@ export const config = {
     vadPrefixPaddingMs: process.env.VAD_PREFIX_PADDING_MS ? num('VAD_PREFIX_PADDING_MS', 300) : null,
   },
 
+  /**
+   * Post-call transcription of the recording. The live transcript guesses the
+   * language per utterance and turns short Hebrew answers into Arabic or
+   * French; a second pass over the whole call, told it is Hebrew, does not.
+   * Needs RECORD_DIR.
+   */
+  stt: {
+    enabled: bool('POST_CALL_TRANSCRIBE', true),
+    model: str('STT_MODEL', 'gemini-2.5-flash'),
+  },
+
   audio: {
     /** Below this, a frame counts as room noise rather than speech. */
     speechThresholdDbfs: num('SPEECH_THRESHOLD_DBFS', -45),
