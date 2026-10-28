@@ -33,6 +33,25 @@ function bearer(req: IncomingMessage): string | null {
 }
 
 /**
+ * For the rejection log: what was presented, without ever logging the secret.
+ * Pasting another line's secret into a new PBX channel is the usual mistake,
+ * so say whose secret it was.
+ */
+function describeToken(token: string | null): Record<string, unknown> {
+  if (!token) return { presented: 'none' };
+  const owner =
+    config.mode === 'bot' ? getStore().listUsers().find((u) => secretMatches(token, u.channelSecret)) : undefined;
+  return {
+    presentedLength: token.length,
+    matches: secretMatches(token, config.server.authSecret)
+      ? 'AUTH_SECRET (the /voice channel)'
+      : owner
+        ? `the channel secret of user ${owner.id} (${owner.email})`
+        : 'nothing known',
+  };
+}
+
+/**
  * Which line a PBX connection belongs to. Each user has their own channel,
  * /voice/<key> with its own secret. The original single channel, /voice with
  * AUTH_SECRET, still works and belongs to the first admin.
@@ -96,7 +115,10 @@ export function startServer(): Server {
     }
     const token = bearer(req);
     if (!token || !secretMatches(token, channel.secret)) {
-      logger.warn({ ip: req.socket.remoteAddress, path: url.pathname }, 'upgrade rejected: bad or missing bearer token');
+      logger.warn(
+        { ip: req.socket.remoteAddress, path: url.pathname, expectedLength: channel.secret.length, ...describeToken(token) },
+        'upgrade rejected: bad or missing bearer token',
+      );
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;
