@@ -1,4 +1,4 @@
-import type { FunctionDeclaration, Schema } from '@google/genai';
+import { Behavior, type FunctionDeclaration, type Schema } from '@google/genai';
 import type { ZodType } from 'zod';
 import type { Logger } from '../logger.js';
 import type { CallActions } from '../pbx/session.js';
@@ -21,6 +21,11 @@ export interface ToolDefinition<T = unknown> {
   input: ZodType<T>;
   /** On a phone call, an unbounded tool is a dropped call. */
   timeoutMs?: number;
+  /**
+   * Record-only: declared NON_BLOCKING and answered with SILENT scheduling, so
+   * the reply goes into the model's context without making it speak again.
+   */
+  silent?: boolean;
   handler: (args: T, ctx: ToolContext) => Promise<Record<string, unknown>> | Record<string, unknown>;
 }
 
@@ -61,7 +66,12 @@ export class ToolRegistry {
       name: t.name,
       description: t.description,
       parameters: t.parameters,
+      ...(t.silent ? { behavior: Behavior.NON_BLOCKING } : {}),
     }));
+  }
+
+  isSilent(name: string): boolean {
+    return this.tools.get(name)?.silent === true;
   }
 
   /**

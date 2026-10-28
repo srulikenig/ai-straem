@@ -64,7 +64,8 @@ export function callControlTools(opts: CallControlOptions): ToolDefinition<never
 
   const endCall: ToolDefinition<{ reason?: string }> = {
     name: 'end_call',
-    description: 'סיום השיחה וניתוק. קרא לכלי אחרי שאמרת שלום, כשברור שהמתקשר סיים.',
+    description:
+      'סיום השיחה וניתוק. קרא לכלי רק אחרי שהמתקשר ענה על כל מה ששאלת ואמר שאין לו עוד מה להוסיף, ואחרי שאמרת משפט סיום. לעולם אל תקרא לו מיד אחרי ששאלת שאלה.',
     parameters: {
       type: Type.OBJECT,
       properties: { reason: { type: Type.STRING, description: 'סיבת הסיום במשפט קצר, לתיעוד.' } },
@@ -81,7 +82,7 @@ export function callControlTools(opts: CallControlOptions): ToolDefinition<never
   const saveAnswer: ToolDefinition<{ name: string; value: string }> = {
     name: 'save_answer',
     description:
-      'שמירת פרט שנאסף מהמתקשר (שם, מספר הזמנה, כתובת, סיבת פנייה). הפרט מופיע בדוחות המרכזייה. שמור כל פרט חשוב מיד כשקיבלת אותו.',
+      'שמירת פרט שנאסף מהמתקשר (שם, מספר הזמנה, כתובת, סיבת פנייה). הפרט מופיע בדוחות המרכזייה. שמור כל פרט חשוב מיד כשקיבלת אותו. השמירה שקטה: אחריה המשך את השיחה כרגיל.',
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -91,6 +92,9 @@ export function callControlTools(opts: CallControlOptions): ToolDefinition<never
       required: ['name', 'value'],
     },
     input: z.object({ name: z.string().min(1).max(64), value: z.string().min(1).max(500) }),
+    // A blocking reply here made the model start a fresh turn right after asking
+    // a question — and answer it itself, assuming the caller's reply, then hang up.
+    silent: true,
     handler: (args, ctx) => {
       ctx.call.saveAnswer(args.name, args.value);
       return { saved: true, name: args.name };

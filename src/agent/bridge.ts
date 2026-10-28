@@ -1,4 +1,4 @@
-import type { FunctionCall, FunctionResponse } from '@google/genai';
+import { FunctionResponseScheduling, type FunctionCall, type FunctionResponse } from '@google/genai';
 import { config } from '../config.js';
 import { SpeechGate } from '../audio/level.js';
 import { downTo8k, upTo16k } from '../audio/resample.js';
@@ -189,7 +189,12 @@ export class CallBridge {
       calls.map(async (call): Promise<FunctionResponse> => {
         const name = call.name ?? '';
         const result = await this.registry.execute(name, call.args ?? {}, ctx);
-        return { id: call.id, name, response: result };
+        return {
+          id: call.id,
+          name,
+          response: result,
+          ...(this.registry.isSilent(name) ? { scheduling: FunctionResponseScheduling.SILENT } : {}),
+        };
       }),
     );
 
